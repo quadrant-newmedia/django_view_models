@@ -12,6 +12,15 @@ class ViewModel(models.Model):
     view_query = None
 
     @classmethod
+    def get_connection(cls):
+        '''
+        This method is multi-db ready. It uses your site's db router to determine which 
+        database the view is in. 
+        '''
+        db = ConnectionRouter().db_for_read(cls())
+        return connections[db]
+
+    @classmethod
     def get_view_definition(cls):
         if cls.VIEW_DEFINITION :
             return cls.VIEW_DEFINITION
@@ -19,7 +28,19 @@ class ViewModel(models.Model):
         definition = getattr(cls, 'view_query')
         if callable(definition):
             definition = definition()
-        return str(definition.query)
+
+        # See:
+        # https://code.djangoproject.com/ticket/25705
+        # https://stackoverflow.com/a/22828674
+        # str(queryset.query) _sometimes_ provides valid SQL, but not in general
+        cursor = cls.get_connection().cursor()
+
+        try :
+            mogrify = cursor.mogrify
+        except AttributeError :
+            raise Exception('''The database backend in use doesn't include the mogrify method (which I believe is only supported by Postgres), so you can't use "view_query" - you must supply raw sql via "VIEW_DEFINITION"''')
+
+        return mogrify(*definition.query.sql_with_params()).decode('utf-8')
 
     class Meta:
         managed = False
@@ -27,12 +48,7 @@ class ViewModel(models.Model):
 
     @classmethod
     def run_sql(cls, sql):
-        '''
-        This method is multi-db ready. It uses your site's db router to determine which 
-        database the view is in. 
-        '''
-        db = ConnectionRouter().db_for_read(cls())
-        with connections[db].cursor() as cursor :
+        with cls.get_connection().cursor() as cursor :
             cursor.execute(sql)
 
     @classmethod
